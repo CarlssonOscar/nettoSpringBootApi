@@ -390,3 +390,15 @@ http://localhost:8080/api/v1/swagger-ui.html
 | Date | Changes |
 |------|---------|
 | 2025-12-29 | Initial version |
+
+## API Contract Ownership
+
+Backend API:
+- Technical, domain-oriented
+- Stable but not frontend-optimized
+- May change internally without affecting frontend
+
+MuleSoft Public API:
+- Frontend-optimized
+- Stable and versioned
+- May differ in naming, structure and aggregation
