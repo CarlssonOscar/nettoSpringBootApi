@@ -69,8 +69,7 @@ public class TaxCalculationService {
 
         BigDecimal churchFeeRate = BigDecimal.ZERO;
         if (request.churchMember()) {
-            churchFeeRate = taxRateService.getChurchFeeRate(
-                    request.municipalityId(), request.churchId(), today);
+            churchFeeRate = taxRateService.getChurchFeeRate(request.municipalityId(), today);
         }
 
         // Calculate yearly values
@@ -88,7 +87,7 @@ public class TaxCalculationService {
 
         // Job tax credit
         BigDecimal jobTaxCredit = jobTaxCreditCalculator.calculate(
-                grossYearly, totalLocalTaxRate, request.birthYear());
+                grossYearly, totalLocalTaxRate, request.isPensioner());
 
         // Calculate individual taxes
         BigDecimal municipalTax = taxableIncome.multiply(municipalTaxRate)

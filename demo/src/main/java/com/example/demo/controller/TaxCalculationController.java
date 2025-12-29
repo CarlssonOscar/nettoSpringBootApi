@@ -31,9 +31,8 @@ public class TaxCalculationController {
      *
      * @param municipalityId Municipality UUID
      * @param grossSalary Monthly gross salary
-     * @param churchMember Whether the person is a church member
-     * @param churchId Church UUID (optional)
-     * @param birthYear Birth year for age-based calculations
+     * @param churchMember Whether the person is a Swedish church member
+     * @param isPensioner Whether the person is 65+ years old
      * @return Detailed tax calculation breakdown
      */
     @GetMapping("/calculate")
@@ -41,18 +40,16 @@ public class TaxCalculationController {
             @RequestParam UUID municipalityId,
             @RequestParam BigDecimal grossSalary,
             @RequestParam(defaultValue = "false") boolean churchMember,
-            @RequestParam(required = false) UUID churchId,
-            @RequestParam(defaultValue = "1985") int birthYear) {
+            @RequestParam(defaultValue = "false") boolean isPensioner) {
 
-        log.info("Tax calculation request: municipality={}, grossSalary={}, churchMember={}, birthYear={}",
-                municipalityId, grossSalary, churchMember, birthYear);
+        log.info("Tax calculation request: municipality={}, grossSalary={}, churchMember={}, isPensioner={}",
+                municipalityId, grossSalary, churchMember, isPensioner);
 
         TaxCalculationRequest request = new TaxCalculationRequest(
                 municipalityId,
                 grossSalary,
                 churchMember,
-                churchId,
-                birthYear
+                isPensioner
         );
 
         TaxCalculationResponse response = taxCalculationService.calculate(request);

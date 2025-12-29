@@ -4,7 +4,6 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDate;
 
 import static com.example.demo.service.TaxConstants.*;
 
@@ -21,18 +20,15 @@ public class JobTaxCreditCalculator {
      * The job tax credit depends on:
      * - Income level
      * - Municipal + regional tax rate
-     * - Age (seniors get enhanced credit)
+     * - Whether person is a pensioner (65+, gets enhanced credit)
      *
      * @param yearlyGrossIncome The yearly gross income
      * @param totalLocalTaxRate Municipal + regional tax rate (as decimal, e.g., 0.32)
-     * @param birthYear The person's birth year
+     * @param isPensioner Whether the person is 65+ years old
      * @return The yearly job tax credit amount
      */
-    public BigDecimal calculate(BigDecimal yearlyGrossIncome, BigDecimal totalLocalTaxRate, int birthYear) {
-        int age = LocalDate.now().getYear() - birthYear;
-        boolean isSenior = age >= SENIOR_AGE_THRESHOLD;
-
-        if (isSenior) {
+    public BigDecimal calculate(BigDecimal yearlyGrossIncome, BigDecimal totalLocalTaxRate, boolean isPensioner) {
+        if (isPensioner) {
             return calculateSeniorCredit(yearlyGrossIncome, totalLocalTaxRate);
         } else {
             return calculateStandardCredit(yearlyGrossIncome, totalLocalTaxRate);

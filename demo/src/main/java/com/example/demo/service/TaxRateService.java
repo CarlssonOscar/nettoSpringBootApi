@@ -76,19 +76,17 @@ public class TaxRateService {
     }
 
     /**
-     * Get church fee rate for a municipality and church.
+     * Get church fee rate for a municipality.
+     * Uses average/default rate since specific congregation is not selected.
      */
-    public BigDecimal getChurchFeeRate(UUID municipalityId, UUID churchId, LocalDate date) {
-        if (churchId == null) {
-            log.debug("No church specified, using default church fee rate");
-            return DEFAULT_CHURCH_FEE_RATE;
-        }
-
-        return municipalityChurchRepository.findValidFee(municipalityId, churchId, date)
+    public BigDecimal getChurchFeeRate(UUID municipalityId, LocalDate date) {
+        // Get first valid church fee for municipality, or use default
+        return municipalityChurchRepository.findValidChurchesForMunicipality(municipalityId, date)
+                .stream()
+                .findFirst()
                 .map(MunicipalityChurch::getFeeRate)
                 .orElseGet(() -> {
-                    log.debug("No church fee found for municipality {} and church {}, using default",
-                            municipalityId, churchId);
+                    log.debug("No church fee found for municipality {}, using default", municipalityId);
                     return DEFAULT_CHURCH_FEE_RATE;
                 });
     }

@@ -5,13 +5,18 @@ import java.util.UUID;
 
 /**
  * Request DTO for tax calculation.
+ * 
+ * Frontend input:
+ * - grossMonthlySalary: Monthly gross salary
+ * - municipalityId: Selected municipality
+ * - churchMember: Whether person is a Swedish church member
+ * - isPensioner: Whether person is 65+ (affects job tax credit)
  */
 public record TaxCalculationRequest(
         UUID municipalityId,
         BigDecimal grossMonthlySalary,
         boolean churchMember,
-        UUID churchId,
-        int birthYear
+        boolean isPensioner
 ) {
     public TaxCalculationRequest {
         if (grossMonthlySalary == null || grossMonthlySalary.compareTo(BigDecimal.ZERO) < 0) {
@@ -23,9 +28,9 @@ public record TaxCalculationRequest(
     }
 
     /**
-     * Constructor without church membership (defaults to false).
+     * Simple constructor with defaults (not church member, not pensioner).
      */
-    public TaxCalculationRequest(UUID municipalityId, BigDecimal grossMonthlySalary, int birthYear) {
-        this(municipalityId, grossMonthlySalary, false, null, birthYear);
+    public TaxCalculationRequest(UUID municipalityId, BigDecimal grossMonthlySalary) {
+        this(municipalityId, grossMonthlySalary, false, false);
     }
 }
