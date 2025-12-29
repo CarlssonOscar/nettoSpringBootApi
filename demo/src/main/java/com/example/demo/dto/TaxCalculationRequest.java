@@ -1,5 +1,7 @@
 package com.example.demo.dto;
 
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -13,18 +15,21 @@ import java.util.UUID;
  * - isPensioner: Whether person is 65+ (affects job tax credit)
  */
 public record TaxCalculationRequest(
+        @NotNull(message = "Municipality ID is required")
         UUID municipalityId,
+        
+        @NotNull(message = "Gross monthly salary is required")
+        @Positive(message = "Gross salary must be a positive value")
         BigDecimal grossMonthlySalary,
+        
         boolean churchMember,
         boolean isPensioner
 ) {
+    /**
+     * Compact constructor - validation is now handled by Bean Validation annotations.
+     */
     public TaxCalculationRequest {
-        if (grossMonthlySalary == null || grossMonthlySalary.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("Gross salary must be a positive value");
-        }
-        if (municipalityId == null) {
-            throw new IllegalArgumentException("Municipality ID is required");
-        }
+        // Bean Validation handles null and positive checks
     }
 
     /**

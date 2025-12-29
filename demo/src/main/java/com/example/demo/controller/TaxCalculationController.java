@@ -6,6 +6,7 @@ import com.example.demo.service.TaxCalculationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -65,7 +66,7 @@ public class TaxCalculationController {
      */
     @PostMapping("/calculate")
     public ResponseEntity<TaxCalculationResponse> calculatePost(
-            @RequestBody TaxCalculationRequest request) {
+            @Valid @RequestBody TaxCalculationRequest request) {
 
         log.info("Tax calculation POST request: municipality={}, grossSalary={}",
                 request.municipalityId(), request.grossMonthlySalary());
