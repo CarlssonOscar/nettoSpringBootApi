@@ -3,6 +3,9 @@ package com.example.demo.controller;
 import com.example.demo.dto.TaxCalculationRequest;
 import com.example.demo.dto.TaxCalculationResponse;
 import com.example.demo.service.TaxCalculationService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -15,7 +18,8 @@ import java.util.UUID;
  * REST controller for tax calculations.
  */
 @RestController
-@RequestMapping("/api/tax")
+@RequestMapping("/api/v1/tax")
+@Tag(name = "Tax Calculation", description = "Endpoints for calculating Swedish net salary")
 public class TaxCalculationController {
 
     private static final Logger log = LoggerFactory.getLogger(TaxCalculationController.class);
