@@ -32,6 +32,10 @@ build/
 ### VS Code ###
 .vscode/
 
+### Logs ###
+logs/
+*.log
+
 ### Secrets & Local Configuration ###
 # Local properties with secrets (database credentials, API keys)
 application-local.properties
