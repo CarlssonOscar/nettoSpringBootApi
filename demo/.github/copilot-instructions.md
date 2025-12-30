@@ -56,8 +56,8 @@ public class OrderController {
 ## 🎯 Core Principles (Quick Reference)
 
 ### Architecture
+- **Clean Architecture**: Dependencies point inward (see architecture-principles.md)
 - **Layered Architecture**: Controller → Service → Repository → Database
-- **Layer Separation**: Presentation → Business Logic → Data Access
 - **Full details**: See [architecture-principles.md](architecture-principles.md)
 
 ### Code Quality

@@ -5,6 +5,44 @@
 
 ---
 
+## Core Philosophy: Clean Architecture & Clean Code
+
+This project follows principles from **Clean Architecture** (Robert C. Martin) and **Clean Code**:
+
+### Clean Architecture Principles
+- **Independence from frameworks**: Business logic doesn't depend on Spring specifics
+- **Testability**: Business rules can be tested without UI, database, or external services
+- **Independence from UI**: The UI can change without affecting business rules
+- **Independence from database**: Business rules are not bound to a specific database
+- **Dependency Rule**: Source code dependencies point inward (toward business logic)
+
+### Clean Code Principles
+- **Readable code**: Code should read like well-written prose
+- **Meaningful names**: Names reveal intent
+- **Small functions**: Do one thing, do it well
+- **No side effects**: Functions should be predictable
+- **DRY**: Don't Repeat Yourself
+- **Boy Scout Rule**: Leave the code cleaner than you found it
+
+### The Dependency Rule
+```
+┌─────────────────────────────────────────────┐
+│  Frameworks & Drivers (Outermost)         │  ← Spring, JPA, Web
+│  ┌───────────────────────────────────────┐  │
+│  │  Interface Adapters                    │  │  ← Controllers, Repositories
+│  │  ┌───────────────────────────────┐  │  │
+│  │  │  Use Cases (Application)           │  │  │  ← Services
+│  │  │  ┌───────────────────────┐  │  │  │
+│  │  │  │  Entities (Innermost)    │  │  │  │  ← Domain models
+│  │  │  └───────────────────────┘  │  │  │
+│  │  └───────────────────────────────┘  │  │
+│  └───────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+         Dependencies point INWARD →
+```
+
+---
+
 ## Architectural Patterns
 
 ### Layered Architecture (Spring Boot Standard)
