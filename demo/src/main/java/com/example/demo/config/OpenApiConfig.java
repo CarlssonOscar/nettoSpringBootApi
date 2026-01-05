@@ -17,8 +17,25 @@ public class OpenApiConfig {
     @Value("${server.port:8080}")
     private String serverPort;
 
+    @Value("${app.base-url:}")
+    private String baseUrl;
+
     @Bean
     public OpenAPI customOpenAPI() {
+        List<Server> servers = new java.util.ArrayList<>();
+        
+        // Add configured base URL if present (for production)
+        if (baseUrl != null && !baseUrl.isBlank()) {
+            servers.add(new Server()
+                    .url(baseUrl)
+                    .description("Production server"));
+        }
+        
+        // Always add localhost for development
+        servers.add(new Server()
+                .url("http://localhost:" + serverPort)
+                .description("Local development server"));
+
         return new OpenAPI()
                 .info(new Info()
                         .title("NettoApi - Swedish Tax Calculator")
@@ -42,10 +59,6 @@ public class OpenApiConfig {
                         .license(new License()
                                 .name("MIT License")
                                 .url("https://opensource.org/licenses/MIT")))
-                .servers(List.of(
-                        new Server()
-                                .url("http://localhost:" + serverPort)
-                                .description("Local development server")
-                ));
+                .servers(servers);
     }
 }

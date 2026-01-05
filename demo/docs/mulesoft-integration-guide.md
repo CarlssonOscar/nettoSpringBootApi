@@ -12,9 +12,10 @@
 
 Import the OpenAPI spec directly into Anypoint Platform:
 
-```
-GET http://localhost:8080/api/v1/api-docs
-```
+| Environment | OpenAPI Spec URL |
+|-------------|------------------|
+| Local | `GET http://localhost:8080/api/v1/api-docs` |
+| Production | `GET https://nettospringbootapi-production.up.railway.app/api/v1/api-docs` |
 
 **Format**: OpenAPI 3.0 JSON
 
@@ -24,9 +25,10 @@ GET http://localhost:8080/api/v1/api-docs
 
 ### Base URL
 
-```
-http://localhost:8080/api/v1
-```
+| Environment | Base URL |
+|-------------|----------|
+| Local | `http://localhost:8080/api/v1` |
+| Production | `https://nettospringbootapi-production.up.railway.app/api/v1` |
 
 ### Tax Calculation
 
@@ -368,20 +370,74 @@ curl -X POST http://localhost:8080/api/v1/tax/calculate \
 
 For interactive API testing:
 
-```
-http://localhost:8080/api/v1/swagger-ui.html
-```
+| Environment | Swagger UI |
+|-------------|------------|
+| Local | http://localhost:8080/api/v1/swagger-ui/index.html |
+| Production | https://nettospringbootapi-production.up.railway.app/api/v1/swagger-ui/index.html |
 
 ---
 
 ## Environment URLs
 
-| Environment | Backend URL |
-|-------------|-------------|
-| Local | `http://localhost:8080` |
-| Dev | TBD |
-| Staging | TBD |
-| Production | TBD |
+| Environment | Backend URL | Swagger UI |
+|-------------|-------------|------------|
+| Local | `http://localhost:8080` | [Swagger UI](http://localhost:8080/api/v1/swagger-ui/index.html) |
+| Production | `https://nettospringbootapi-production.up.railway.app` | [Swagger UI](https://nettospringbootapi-production.up.railway.app/api/v1/swagger-ui/index.html) |
+
+### MuleSoft Property Configuration
+
+Create environment-specific property files for dynamic URL switching:
+
+**`config-local.yaml`**
+```yaml
+nettoapi:
+  baseUrl: "http://localhost:8080"
+  basePath: "/api/v1"
+  timeout:
+    connection: 5000
+    response: 30000
+```
+
+**`config-prod.yaml`**
+```yaml
+nettoapi:
+  baseUrl: "https://nettospringbootapi-production.up.railway.app"
+  basePath: "/api/v1"
+  timeout:
+    connection: 5000
+    response: 30000
+```
+
+### Usage in MuleSoft Flows
+
+Reference the property in HTTP Request configuration:
+
+```xml
+<http:request-config name="NettoApi_Config">
+  <http:request-connection 
+    host="${nettoapi.baseUrl}" 
+    port="443" 
+    protocol="HTTPS" />
+</http:request-config>
+```
+
+Or use DataWeave for dynamic URL construction:
+
+```dataweave
+%dw 2.0
+output application/java
+---
+p('nettoapi.baseUrl') ++ p('nettoapi.basePath') ++ "/tax/calculate"
+```
+
+### Environment Selection in Anypoint Studio
+
+Configure the environment via system property or CloudHub property:
+
+```
+-Dmule.env=local   # Uses config-local.yaml
+-Dmule.env=prod    # Uses config-prod.yaml
+```
 
 ---
 

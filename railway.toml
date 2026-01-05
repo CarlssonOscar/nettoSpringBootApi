@@ -1,0 +1,6 @@
+# Railway configuration
+# IMPORTANT: Set "Root Directory" to "demo" in Railway Service Settings
+
+[build]
+builder = "nixpacks"
+
