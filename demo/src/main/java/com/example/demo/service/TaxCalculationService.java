@@ -17,14 +17,22 @@ import java.time.LocalDate;
 import static com.example.demo.service.TaxConstants.*;
 
 /**
- * Main service for Swedish salary tax calculations.
- * Handles all aspects of nettolön calculation including:
- * - Municipal and regional tax
- * - State tax
- * - Basic deduction (grundavdrag)
- * - Job tax credit (jobbskatteavdrag)
- * - Burial fee
- * - Church fee (optional)
+ * Main service for Swedish salary tax calculations (2026).
+ * 
+ * Implementation follows SKV 433 - Teknisk beskrivning för skattetabeller 2026.
+ * 
+ * Kolumn 1 (arbetsinkomst för person under 66 år) beräknas enligt:
+ * - Kommunal inkomstskatt (på beskattningsbar förvärvsinkomst)
+ * - Statlig inkomstskatt (20% över 643 000 kr BFI)
+ * - Allmän pensionsavgift (7% av bruttolön, max 47 100 kr)
+ * - Begravningsavgift
+ * - Kyrkoavgift (om medlem)
+ * - Public service-avgift (1% av BFI, max 1 184 kr)
+ * 
+ * Minus skattereduktioner:
+ * - Skattereduktion för allmän pensionsavgift (100%)
+ * - Skattereduktion för arbetsinkomst (jobbskatteavdrag)
+ * - Skattereduktion för förvärvsinkomst (0.75% av BFI-40000, max 1 500 kr)
  */
 @Service
 public class TaxCalculationService {
@@ -49,6 +57,7 @@ public class TaxCalculationService {
 
     /**
      * Calculate net salary from gross salary with full tax breakdown.
+     * Following SKV 433 exactly.
      */
     @Transactional
     public TaxCalculationResponse calculate(TaxCalculationRequest request) {
@@ -62,7 +71,7 @@ public class TaxCalculationService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Municipality not found: " + request.municipalityId()));
 
-        // Get tax rates
+        // Get tax rates from database
         BigDecimal municipalTaxRate = taxRateService.getMunicipalTaxRate(request.municipalityId(), today);
         BigDecimal regionalTaxRate = taxRateService.getRegionalTaxRate(request.municipalityId(), today);
         BigDecimal burialFeeRate = taxRateService.getBurialFeeRate(request.municipalityId(), today);
@@ -72,53 +81,132 @@ public class TaxCalculationService {
             churchFeeRate = taxRateService.getChurchFeeRate(request.municipalityId(), today);
         }
 
-        // Calculate yearly values
+        // ========================================
+        // 1. BERÄKNA ÅRSINKOMST (SKV 433 section 7.1)
+        // ========================================
         BigDecimal grossYearly = request.grossMonthlySalary()
                 .multiply(BigDecimal.valueOf(MONTHS_PER_YEAR));
 
-        // Basic deduction
-        BigDecimal basicDeduction = basicDeductionCalculator.calculate(grossYearly);
+        // ========================================
+        // 2. GRUNDAVDRAG (SKV 433 section 6.1)
+        // ========================================
+        BigDecimal basicDeduction = basicDeductionCalculator.calculate(grossYearly, request.isPensioner());
 
-        // Taxable income (can't be negative)
+        // ========================================
+        // 3. BESKATTNINGSBAR FÖRVÄRVSINKOMST
+        // ========================================
         BigDecimal taxableIncome = grossYearly.subtract(basicDeduction).max(BigDecimal.ZERO);
 
-        // Combined local tax rate for job tax credit calculation
+        // ========================================
+        // 4. KOMMUNAL INKOMSTSKATT (SKV 433 section 7.3)
+        // ========================================
         BigDecimal totalLocalTaxRate = municipalTaxRate.add(regionalTaxRate);
-
-        // Job tax credit
-        BigDecimal jobTaxCredit = jobTaxCreditCalculator.calculate(
-                grossYearly, totalLocalTaxRate, request.isPensioner());
-
-        // Calculate individual taxes
         BigDecimal municipalTax = taxableIncome.multiply(municipalTaxRate)
                 .setScale(SCALE, RoundingMode.HALF_UP);
-
         BigDecimal regionalTax = taxableIncome.multiply(regionalTaxRate)
                 .setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal totalCommunalTax = municipalTax.add(regionalTax);
 
-        BigDecimal stateTax = calculateStateTax(grossYearly);
+        // ========================================
+        // 5. STATLIG INKOMSTSKATT (SKV 433 section 7.2)
+        // 20% på BFI över 643 000 kr
+        // ========================================
+        BigDecimal stateTax = calculateStateTax(taxableIncome);
 
-        // Burial and church fees are on gross income
-        BigDecimal burialFee = grossYearly.multiply(burialFeeRate)
-                .setScale(SCALE, RoundingMode.HALF_UP);
+        // ========================================
+        // 6. ALLMÄN PENSIONSAVGIFT (SKV 433 section 7.4)
+        // 7% av årsinkomst, max 47 100 kr
+        // Ej för pensionärer eller inkomst under 25 042 kr
+        // ========================================
+        BigDecimal pensionContribution = BigDecimal.ZERO;
+        if (!request.isPensioner() && grossYearly.compareTo(PENSION_CONTRIBUTION_MIN_INCOME) >= 0) {
+            BigDecimal pensionBase = grossYearly.min(PENSION_CONTRIBUTION_MAX_INCOME);
+            pensionContribution = pensionBase.multiply(PENSION_CONTRIBUTION_RATE);
+            // Avrunda till närmaste hundratal (50 öre avrundas nedåt)
+            pensionContribution = roundToHundredSpecial(pensionContribution);
+            pensionContribution = pensionContribution.min(PENSION_CONTRIBUTION_MAX);
+        }
+
+        // ========================================
+        // 7. SKATTEREDUKTION FÖR ALLMÄN PENSIONSAVGIFT (SKV 433 section 7.5.1)
+        // 100% av avgiften, men får ej överstiga kommunal + statlig skatt
+        // ========================================
+        BigDecimal pensionReduction = pensionContribution.min(totalCommunalTax.add(stateTax));
+
+        // ========================================
+        // 8. JOBBSKATTEAVDRAG (SKV 433 section 7.5.2)
+        // Endast mot kommunal inkomstskatt
+        // ========================================
+        BigDecimal jobTaxCredit = BigDecimal.ZERO;
+        if (!request.isPensioner() || grossYearly.compareTo(BigDecimal.ZERO) > 0) {
+            // For working income (kolumn 1 or 3)
+            jobTaxCredit = jobTaxCreditCalculator.calculate(
+                    grossYearly, totalLocalTaxRate, request.isPensioner());
+        }
+
+        // ========================================
+        // 9. SKATTEREDUKTION FÖR FÖRVÄRVSINKOMST (SKV 433 section 7.5.4)
+        // 0.75% av (BFI - 40 000), max 1 500 kr
+        // ========================================
+        BigDecimal incomeReduction = calculateIncomeReduction(taxableIncome);
+
+        // ========================================
+        // 10. PUBLIC SERVICE-AVGIFT (SKV 433 section 7.6)
+        // 1% av BFI, max 1 184 kr
+        // ========================================
+        BigDecimal publicServiceFee = calculatePublicServiceFee(taxableIncome);
+
+        // ========================================
+        // 11. BEGRAVNINGSAVGIFT OCH KYRKOAVGIFT (SKV 433 section 7.3)
+        // Beräknas på beskattningsbar förvärvsinkomst
+        // ========================================
+        BigDecimal burialFee = taxableIncome.multiply(burialFeeRate)
+                .setScale(0, RoundingMode.DOWN);
 
         BigDecimal churchFee = BigDecimal.ZERO;
         if (request.churchMember()) {
-            churchFee = grossYearly.multiply(churchFeeRate)
-                    .setScale(SCALE, RoundingMode.HALF_UP);
+            churchFee = taxableIncome.multiply(churchFeeRate)
+                    .setScale(0, RoundingMode.DOWN);
         }
 
-        // Total yearly tax (before job tax credit)
-        BigDecimal totalTaxBeforeCredit = municipalTax
-                .add(regionalTax)
-                .add(stateTax)
+        // ========================================
+        // 12. TOTAL SKATT (SKV 433 section 8)
+        // Formel för kolumn 1:
+        // statlig skatt + kommunal skatt 
+        // - skattereduktion för pensionsavgift 
+        // - jobbskatteavdrag 
+        // - skattereduktion förvärvsinkomst
+        // + begravnings- och kyrkoavgift 
+        // + allmän pensionsavgift 
+        // + public service-avgift
+        // ========================================
+        
+        // Kommunal skatt efter reduktioner
+        // Jobbskatteavdrag och inkomstreduktion räknas bara av mot kommunal skatt
+        BigDecimal communalTaxAfterReductions = totalCommunalTax
+                .subtract(jobTaxCredit)
+                .subtract(incomeReduction)
+                .max(BigDecimal.ZERO);
+        
+        // Statlig skatt efter pensionsavgiftsreduktion
+        // Pensionsavgiftsreduktion dras först mot kommunal, sedan statlig
+        BigDecimal pensionReductionForCommunal = pensionReduction.min(totalCommunalTax);
+        BigDecimal pensionReductionForState = pensionReduction.subtract(pensionReductionForCommunal).max(BigDecimal.ZERO);
+        
+        BigDecimal communalTaxFinal = communalTaxAfterReductions.subtract(pensionReductionForCommunal).max(BigDecimal.ZERO);
+        BigDecimal stateTaxFinal = stateTax.subtract(pensionReductionForState).max(BigDecimal.ZERO);
+
+        // Total årlig skatt
+        BigDecimal yearlyTotalTax = communalTaxFinal
+                .add(stateTaxFinal)
                 .add(burialFee)
-                .add(churchFee);
+                .add(churchFee)
+                .add(pensionContribution)
+                .add(publicServiceFee);
 
-        // Apply job tax credit (reduces tax, can't make it negative)
-        BigDecimal yearlyTotalTax = totalTaxBeforeCredit.subtract(jobTaxCredit).max(BigDecimal.ZERO);
-
-        // Monthly values
+        // ========================================
+        // 13. MÅNATLIG SKATT OCH NETTOLÖN
+        // ========================================
         BigDecimal monthlyTotalTax = yearlyTotalTax
                 .divide(BigDecimal.valueOf(MONTHS_PER_YEAR), SCALE, RoundingMode.HALF_UP);
 
@@ -161,17 +249,64 @@ public class TaxCalculationService {
     }
 
     /**
-     * Calculate state tax (statlig skatt).
-     * 20% on yearly income above the threshold.
+     * Calculate state tax (statlig skatt) - SKV 433 section 7.2.
+     * 20% on beskattningsbar förvärvsinkomst above 643 000 kr.
      */
-    private BigDecimal calculateStateTax(BigDecimal yearlyGrossIncome) {
-        if (yearlyGrossIncome.compareTo(STATE_TAX_THRESHOLD) <= 0) {
+    private BigDecimal calculateStateTax(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(STATE_TAX_THRESHOLD) <= 0) {
             return BigDecimal.ZERO;
         }
 
-        BigDecimal incomeAboveThreshold = yearlyGrossIncome.subtract(STATE_TAX_THRESHOLD);
+        BigDecimal incomeAboveThreshold = taxableIncome.subtract(STATE_TAX_THRESHOLD);
         return incomeAboveThreshold.multiply(STATE_TAX_RATE)
                 .setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Calculate income reduction (skattereduktion för förvärvsinkomst) - SKV 433 section 7.5.4.
+     * 0.75% of (BFI - 40 000), max 1 500 kr.
+     */
+    private BigDecimal calculateIncomeReduction(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(INCOME_REDUCTION_THRESHOLD) <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        if (taxableIncome.compareTo(INCOME_REDUCTION_MAX_THRESHOLD) >= 0) {
+            return INCOME_REDUCTION_MAX;
+        }
+
+        BigDecimal base = taxableIncome.subtract(INCOME_REDUCTION_THRESHOLD);
+        return base.multiply(INCOME_REDUCTION_RATE).setScale(0, RoundingMode.DOWN);
+    }
+
+    /**
+     * Calculate public service fee - SKV 433 section 7.6.
+     * 1% of BFI, max 1 184 kr.
+     */
+    private BigDecimal calculatePublicServiceFee(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        if (taxableIncome.compareTo(PUBLIC_SERVICE_THRESHOLD) >= 0) {
+            return PUBLIC_SERVICE_MAX;
+        }
+
+        return taxableIncome.multiply(PUBLIC_SERVICE_RATE).setScale(0, RoundingMode.DOWN);
+    }
+
+    /**
+     * Round to nearest hundred, with special rule: 50 kr rounds down.
+     * From SKV 433 section 7.4: "Avgift som slutar på 50 kr avrundas till närmaste lägre hundratal kronor."
+     */
+    private BigDecimal roundToHundredSpecial(BigDecimal value) {
+        BigDecimal remainder = value.remainder(new BigDecimal("100"));
+        BigDecimal base = value.subtract(remainder);
+        
+        if (remainder.compareTo(new BigDecimal("50")) > 0) {
+            return base.add(new BigDecimal("100"));
+        }
+        return base;
     }
 
     /**
@@ -192,5 +327,26 @@ public class TaxCalculationService {
             // Don't fail the calculation if logging fails
             log.error("Failed to log tax calculation", e);
         }
+    }
+
+    /**
+     * Calculate net salary using municipality code instead of UUID.
+     */
+    public TaxCalculationResponse calculateByMunicipalityCode(
+            String municipalityCode, BigDecimal grossMonthlySalary, 
+            boolean churchMember, boolean isPensioner) {
+        
+        Municipality municipality = taxRateService.getMunicipalityByCode(municipalityCode)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Municipality not found with code: " + municipalityCode));
+
+        TaxCalculationRequest request = new TaxCalculationRequest(
+                municipality.getId(),
+                grossMonthlySalary,
+                churchMember,
+                isPensioner
+        );
+
+        return calculate(request);
     }
 }

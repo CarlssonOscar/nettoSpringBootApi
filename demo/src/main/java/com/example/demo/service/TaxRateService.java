@@ -50,12 +50,11 @@ public class TaxRateService {
     }
 
     /**
-     * Get regional tax rate for a municipality's region.
+     * Get regional tax rate for a municipality.
+     * Note: Regional rates are stored per municipality in the tax_rate table.
      */
     public BigDecimal getRegionalTaxRate(UUID municipalityId, LocalDate date) {
-        return municipalityRepository.findById(municipalityId)
-                .flatMap(municipality -> taxRateRepository.findByRegionAndTaxType(
-                        municipality.getRegion().getId(), "REGIONAL", date))
+        return taxRateRepository.findByMunicipalityAndTaxType(municipalityId, "REGIONAL", date)
                 .map(TaxRate::getRate)
                 .orElseGet(() -> {
                     log.warn("No regional tax rate found for municipality {}, using default", municipalityId);
@@ -77,10 +76,16 @@ public class TaxRateService {
 
     /**
      * Get church fee rate for a municipality.
-     * Uses average/default rate since specific congregation is not selected.
+     * First tries tax_rate table, then municipality_church, then default.
      */
     public BigDecimal getChurchFeeRate(UUID municipalityId, LocalDate date) {
-        // Get first valid church fee for municipality, or use default
+        // First try to get from tax_rate table (imported from Excel)
+        Optional<TaxRate> churchRate = taxRateRepository.findByMunicipalityAndTaxType(municipalityId, "CHURCH", date);
+        if (churchRate.isPresent()) {
+            return churchRate.get().getRate();
+        }
+
+        // Fallback to municipality_church table
         return municipalityChurchRepository.findValidChurchesForMunicipality(municipalityId, date)
                 .stream()
                 .findFirst()
@@ -96,5 +101,12 @@ public class TaxRateService {
      */
     public Optional<Municipality> getMunicipality(UUID municipalityId) {
         return municipalityRepository.findById(municipalityId);
+    }
+
+    /**
+     * Get municipality by code (e.g., "0180" for Stockholm).
+     */
+    public Optional<Municipality> getMunicipalityByCode(String code) {
+        return municipalityRepository.findByCode(code);
     }
 }

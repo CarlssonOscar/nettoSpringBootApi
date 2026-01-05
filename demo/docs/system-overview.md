@@ -489,6 +489,44 @@ erDiagram
 - More classes to navigate
 - Coordination logic in TaxCalculationService
 
+### Decision 6: Tax Data from Skatteverket Excel Import
+
+**Decision**: Import tax rates from Skatteverket's official Excel files (`skattesatser-kommuner-YYYY.xlsx`) via admin endpoint, and calculate grundavdrag and jobbskatteavdrag using Skatteverket's published formulas.
+
+**Data Source**: 
+- **Tax rates**: Imported from Skatteverket Excel file via `POST /api/v1/admin/import/tax-rates`
+- **File location**: Download from [Skatteverket Skattetabeller](https://skatteverket.se/foretag/arbetsgivare/arbetsgivaravgifterochskatteavdrag/skattetabeller.html)
+
+**Imported data per municipality**:
+| Column | Tax Type | Example |
+|--------|----------|---------|
+| Kommunalskatt | COMMUNAL | 20.35% |
+| Landstingsskatt | REGIONAL | 11.68% |
+| Begravningsavgift | BURIAL | 0.28% |
+| Kyrkoavgift | CHURCH | 1.03% |
+
+**Calculated deductions (formula-based)**:
+| Deduction | Calculator | Source |
+|-----------|------------|--------|
+| Grundavdrag | `BasicDeductionCalculator` | Skatteverket formula using prisbasbelopp (PBB) |
+| Jobbskatteavdrag | `JobTaxCreditCalculator` | Skatteverket formula using income + local tax rate |
+
+**Alternatives Considered**:
+- Import PDF tax tables (tabell 29-40) manually (rejected: error-prone, 1800+ rows per table)
+- Parse PDF programmatically (rejected: unreliable for tabular data)
+- No deductions (rejected: inaccurate results)
+
+**Rationale**:
+- Skatteverket's tax tables (skattetabeller) are *generated* from these same formulas
+- Excel import automates municipality/region data with minimal manual effort
+- Formula approach is transparent, testable, and matches official calculation method
+- Yearly updates require only: new Excel file + updated constants (PBB, thresholds)
+
+**Trade-offs**:
+- Minor rounding differences possible vs. official tables (±1 kr)
+- Must update `TaxConstants` annually with new PBB and thresholds
+- Church fee defaults to value from Excel (typically ~1%)
+
 ---
 
 ## 8. Integration Points
@@ -507,6 +545,7 @@ The Backend API exposes RESTful endpoints consumed by the API Gateway:
 | GET | `/api/v1/health` | Health check |
 | GET | `/api/v1/health/ready` | Readiness probe |
 | GET | `/api/v1/health/live` | Liveness probe |
+| POST | `/api/v1/admin/import/tax-rates` | Import tax rates from Excel (admin) |
 
 **OpenAPI Specification**: Available at `/api/v1/api-docs` for MuleSoft import.
 
@@ -538,7 +577,7 @@ Potential future integration to fetch official tax rates automatically.
 |------------|--------|------------|
 | **No authentication** | API is publicly accessible | Rely on API Gateway for auth |
 | **No rate limiting** | Vulnerable to abuse | Implement in API Gateway |
-| **Default rates may be inaccurate** | Calculations may differ from reality | Add complete tax rate data |
+| **Rounding vs. tax tables** | Results may differ ±1 kr from official tables | Acceptable for informational use |
 | **No caching** | Every request hits database | Add Redis/Caffeine cache |
 | **Swedish only** | No i18n support | Not a priority for MVP |
 
@@ -551,7 +590,7 @@ Potential future integration to fetch official tax rates automatically.
 
 ### Planned Improvements
 
-- [ ] Add comprehensive tax rate data (V2 migration)
+- [x] Add comprehensive tax rate data via Excel import
 - [ ] Implement caching for tax rates
 - [ ] Add input validation with detailed error messages
 - [ ] Create integration tests
@@ -588,6 +627,7 @@ Potential future integration to fetch official tax rates automatically.
 | **Entity** | JPA-mapped domain object |
 | **Flyway** | Database migration tool |
 | **HikariCP** | JDBC connection pool |
+| **Apache POI** | Java library for reading/writing Excel files |
 
 ---
 
@@ -596,6 +636,7 @@ Potential future integration to fetch official tax rates automatically.
 | Date | Version | Changes |
 |------|---------|---------|
 | 2025-12-29 | 1.0 | Initial documentation |
+| 2026-01-05 | 1.1 | Added Excel import for tax rates from Skatteverket, documented formula-based deductions |
 
 ---
 

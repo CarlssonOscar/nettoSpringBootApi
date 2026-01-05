@@ -41,6 +41,7 @@ public class TaxCalculationController {
      * @return Detailed tax calculation breakdown
      */
     @GetMapping("/calculate")
+    @Operation(summary = "Calculate net salary by municipality UUID")
     public ResponseEntity<TaxCalculationResponse> calculate(
             @RequestParam UUID municipalityId,
             @RequestParam BigDecimal grossSalary,
@@ -58,6 +59,30 @@ public class TaxCalculationController {
         );
 
         TaxCalculationResponse response = taxCalculationService.calculate(request);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Calculate net salary using municipality code (e.g., "0180" for Stockholm).
+     */
+    @GetMapping("/calculate-by-code")
+    @Operation(summary = "Calculate net salary by municipality code", 
+               description = "Use 4-digit municipality code (e.g., 0180 for Stockholm)")
+    public ResponseEntity<TaxCalculationResponse> calculateByCode(
+            @Parameter(description = "4-digit municipality code, e.g., 0180 for Stockholm", example = "0180")
+            @RequestParam String municipalityCode,
+            @Parameter(description = "Monthly gross salary in SEK", example = "45000")
+            @RequestParam BigDecimal grossSalary,
+            @Parameter(description = "Is Swedish Church member?")
+            @RequestParam(defaultValue = "false") boolean churchMember,
+            @Parameter(description = "Is 65+ years old?")
+            @RequestParam(defaultValue = "false") boolean isPensioner) {
+
+        log.info("Tax calculation by code: municipality={}, grossSalary={}, churchMember={}, isPensioner={}",
+                municipalityCode, grossSalary, churchMember, isPensioner);
+
+        TaxCalculationResponse response = taxCalculationService.calculateByMunicipalityCode(
+                municipalityCode, grossSalary, churchMember, isPensioner);
         return ResponseEntity.ok(response);
     }
 

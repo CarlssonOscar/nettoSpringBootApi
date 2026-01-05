@@ -1,6 +1,7 @@
 package com.example.demo.entity;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -8,6 +9,7 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "region")
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Region {
 
     @Id
