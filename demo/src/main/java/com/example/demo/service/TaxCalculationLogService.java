@@ -1,8 +1,8 @@
 package com.example.demo.service;
 
-import com.example.demo.entity.Municipality;
 import com.example.demo.entity.TaxCalculationLog;
 import com.example.demo.repository.TaxCalculationLogRepository;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -18,6 +18,7 @@ import java.util.UUID;
  * Separated from TaxCalculationService to enable Spring proxy-based @Async.
  */
 @Service
+@RequiredArgsConstructor
 public class TaxCalculationLogService {
 
     private static final Logger log = LoggerFactory.getLogger(TaxCalculationLogService.class);
@@ -25,10 +26,6 @@ public class TaxCalculationLogService {
     private static final int SCALE = 2;
 
     private final TaxCalculationLogRepository taxCalculationLogRepository;
-
-    public TaxCalculationLogService(TaxCalculationLogRepository taxCalculationLogRepository) {
-        this.taxCalculationLogRepository = taxCalculationLogRepository;
-    }
 
     /**
      * Log the tax calculation for analytics and auditing.

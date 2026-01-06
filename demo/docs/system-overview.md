@@ -1,8 +1,8 @@
 # NettoApi - System Overview
 
 > **Backend API** - Swedish Salary & Tax Calculator  
-> **Last Updated**: 2025-12-29  
-> **Version**: 1.0
+> **Last Updated**: 2026-01-06  
+> **Version**: 1.2
 
 ---
 
@@ -139,8 +139,8 @@ graph TD
 | Library | Purpose |
 |---------|---------|
 | `spring-boot-starter-webmvc` | REST API support |
-| `spring-boot-starter-data-jpa` | JPA/Hibernate integration |
-| `flyway-core` | Database migrations |
+| `spring-boot-starter-data-jpa` | JPA/Hibernate integration || `spring-boot-starter-cache` | Caching abstraction |
+| `caffeine` | High-performance in-memory cache || `flyway-core` | Database migrations |
 | `springdoc-openapi` | Swagger UI & OpenAPI spec |
 | `postgresql` | Database driver |
 
@@ -169,6 +169,7 @@ graph LR
     subgraph Services
         TCS[TaxCalculationService]
         TRS[TaxRateService]
+        TCLS[TaxCalculationLogService]
     end
     
     subgraph Calculators
@@ -188,6 +189,7 @@ graph LR
     TCS --> TRS
     TCS --> BDC
     TCS --> JTC
+    TCS --> TCLS
     TRS --> MR
     TRS --> TRR
 ```
@@ -203,9 +205,10 @@ graph LR
 - Log calculations for analytics
 
 **Key Dependencies**:
-- `TaxRateService` - fetches tax rates
+- `TaxRateService` - fetches tax rates (cached)
 - `BasicDeductionCalculator` - calculates grundavdrag
 - `JobTaxCreditCalculator` - calculates jobbskatteavdrag
+- `TaxCalculationLogService` - async calculation logging
 
 ### TaxRateService
 
@@ -215,6 +218,15 @@ graph LR
 - Fetch municipal, regional, burial, church rates
 - Apply date-based validity filtering
 - Return default rates when data is missing
+- Cache results using Caffeine (1 hour TTL)
+
+### TaxCalculationLogService
+
+**Purpose**: Asynchronous logging of tax calculations for analytics.
+
+**Responsibilities**:
+- Log calculations without blocking the main request
+- Run in separate thread pool (`@Async`)
 
 ### Calculators
 
@@ -578,7 +590,6 @@ Potential future integration to fetch official tax rates automatically.
 | **No authentication** | API is publicly accessible | Rely on API Gateway for auth |
 | **No rate limiting** | Vulnerable to abuse | Implement in API Gateway |
 | **Rounding vs. tax tables** | Results may differ ±1 kr from official tables | Acceptable for informational use |
-| **No caching** | Every request hits database | Add Redis/Caffeine cache |
 | **Swedish only** | No i18n support | Not a priority for MVP |
 
 ### Technical Debt
@@ -591,7 +602,9 @@ Potential future integration to fetch official tax rates automatically.
 ### Planned Improvements
 
 - [x] Add comprehensive tax rate data via Excel import
-- [ ] Implement caching for tax rates
+- [x] Implement caching for tax rates (Caffeine, 1h TTL)
+- [x] Add async logging for calculations
+- [x] Optimize database indexes for tax rate queries
 - [ ] Add input validation with detailed error messages
 - [ ] Create integration tests
 - [ ] Add request logging/tracing
@@ -628,6 +641,7 @@ Potential future integration to fetch official tax rates automatically.
 | **Flyway** | Database migration tool |
 | **HikariCP** | JDBC connection pool |
 | **Apache POI** | Java library for reading/writing Excel files |
+| **Caffeine** | High-performance Java caching library |
 
 ---
 
@@ -636,8 +650,7 @@ Potential future integration to fetch official tax rates automatically.
 | Date | Version | Changes |
 |------|---------|---------|
 | 2025-12-29 | 1.0 | Initial documentation |
-| 2026-01-05 | 1.1 | Added Excel import for tax rates from Skatteverket, documented formula-based deductions |
-
+| 2026-01-05 | 1.1 | Added Excel import for tax rates from Skatteverket, documented formula-based deductions || 2026-01-06 | 1.2 | Added Caffeine caching, async logging, optimized DB indexes, refactored TaxCalculationService |
 ---
 
 *This documentation focuses on architectural decisions and system design. For implementation details, refer to the source code.*

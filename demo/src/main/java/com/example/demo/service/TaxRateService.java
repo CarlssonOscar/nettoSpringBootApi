@@ -6,6 +6,7 @@ import com.example.demo.entity.TaxRate;
 import com.example.demo.repository.MunicipalityChurchRepository;
 import com.example.demo.repository.MunicipalityRepository;
 import com.example.demo.repository.TaxRateRepository;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
@@ -25,6 +26,7 @@ import static com.example.demo.service.TaxConstants.*;
  * Service for retrieving tax rates for a municipality.
  */
 @Service
+@RequiredArgsConstructor
 public class TaxRateService {
 
     private static final Logger log = LoggerFactory.getLogger(TaxRateService.class);
@@ -32,14 +34,6 @@ public class TaxRateService {
     private final MunicipalityRepository municipalityRepository;
     private final TaxRateRepository taxRateRepository;
     private final MunicipalityChurchRepository municipalityChurchRepository;
-
-    public TaxRateService(MunicipalityRepository municipalityRepository,
-                          TaxRateRepository taxRateRepository,
-                          MunicipalityChurchRepository municipalityChurchRepository) {
-        this.municipalityRepository = municipalityRepository;
-        this.taxRateRepository = taxRateRepository;
-        this.municipalityChurchRepository = municipalityChurchRepository;
-    }
 
     /**
      * Get all tax rates for a municipality in a single query.

@@ -3,6 +3,7 @@ package com.example.demo.service;
 import com.example.demo.dto.TaxCalculationRequest;
 import com.example.demo.dto.TaxCalculationResponse;
 import com.example.demo.entity.Municipality;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.Map;
+import java.util.UUID;
 
 import static com.example.demo.service.TaxConstants.*;
 
@@ -18,21 +21,9 @@ import static com.example.demo.service.TaxConstants.*;
  * Main service for Swedish salary tax calculations (2026).
  * 
  * Implementation follows SKV 433 - Teknisk beskrivning för skattetabeller 2026.
- * 
- * Kolumn 1 (arbetsinkomst för person under 66 år) beräknas enligt:
- * - Kommunal inkomstskatt (på beskattningsbar förvärvsinkomst)
- * - Statlig inkomstskatt (20% över 643 000 kr BFI)
- * - Allmän pensionsavgift (7% av bruttolön, max 47 100 kr)
- * - Begravningsavgift
- * - Kyrkoavgift (om medlem)
- * - Public service-avgift (1% av BFI, max 1 184 kr)
- * 
- * Minus skattereduktioner:
- * - Skattereduktion för allmän pensionsavgift (100%)
- * - Skattereduktion för arbetsinkomst (jobbskatteavdrag)
- * - Skattereduktion för förvärvsinkomst (0.75% av BFI-40000, max 1 500 kr)
  */
 @Service
+@RequiredArgsConstructor
 public class TaxCalculationService {
 
     private static final Logger log = LoggerFactory.getLogger(TaxCalculationService.class);
@@ -43,19 +34,41 @@ public class TaxCalculationService {
     private final JobTaxCreditCalculator jobTaxCreditCalculator;
     private final TaxCalculationLogService taxCalculationLogService;
 
-    public TaxCalculationService(TaxRateService taxRateService,
-                                  BasicDeductionCalculator basicDeductionCalculator,
-                                  JobTaxCreditCalculator jobTaxCreditCalculator,
-                                  TaxCalculationLogService taxCalculationLogService) {
-        this.taxRateService = taxRateService;
-        this.basicDeductionCalculator = basicDeductionCalculator;
-        this.jobTaxCreditCalculator = jobTaxCreditCalculator;
-        this.taxCalculationLogService = taxCalculationLogService;
+    /**
+     * Internal record to hold tax rates for a calculation.
+     */
+    private record TaxRates(
+            BigDecimal municipal,
+            BigDecimal regional,
+            BigDecimal burial,
+            BigDecimal church
+    ) {
+        BigDecimal totalLocal() {
+            return municipal.add(regional);
+        }
+    }
+
+    /**
+     * Internal record to hold intermediate calculation results.
+     */
+    private record TaxComponents(
+            BigDecimal municipalTax,
+            BigDecimal regionalTax,
+            BigDecimal stateTax,
+            BigDecimal pensionContribution,
+            BigDecimal jobTaxCredit,
+            BigDecimal incomeReduction,
+            BigDecimal publicServiceFee,
+            BigDecimal burialFee,
+            BigDecimal churchFee
+    ) {
+        BigDecimal totalCommunalTax() {
+            return municipalTax.add(regionalTax);
+        }
     }
 
     /**
      * Calculate net salary from gross salary with full tax breakdown.
-     * Following SKV 433 exactly.
      * Using readOnly=true for better performance since this only reads data.
      */
     @Transactional(readOnly = true)
@@ -64,265 +77,25 @@ public class TaxCalculationService {
         log.info("Calculating tax for municipality {} with gross salary {}",
                 request.municipalityId(), request.grossMonthlySalary());
 
-        LocalDate today = LocalDate.now();
-
-        // Get municipality info
-        Municipality municipality = taxRateService.getMunicipality(request.municipalityId())
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "Municipality not found: " + request.municipalityId()));
-
-        // OPTIMIZATION: Get ALL tax rates in ONE query instead of 4 separate queries
-        java.util.Map<String, BigDecimal> allRates = taxRateService.getAllTaxRates(request.municipalityId(), today);
+        Municipality municipality = getMunicipalityOrThrow(request.municipalityId());
+        TaxRates rates = fetchTaxRates(request.municipalityId(), request.churchMember());
         
-        BigDecimal municipalTaxRate = allRates.getOrDefault("COMMUNAL", TaxConstants.DEFAULT_MUNICIPAL_TAX_RATE);
-        BigDecimal regionalTaxRate = allRates.getOrDefault("REGIONAL", TaxConstants.DEFAULT_REGIONAL_TAX_RATE);
-        BigDecimal burialFeeRate = allRates.getOrDefault("BURIAL", TaxConstants.DEFAULT_BURIAL_FEE_RATE);
-
-        BigDecimal churchFeeRate = BigDecimal.ZERO;
-        if (request.churchMember()) {
-            churchFeeRate = allRates.getOrDefault("CHURCH", TaxConstants.DEFAULT_CHURCH_FEE_RATE);
-        }
-
-        // ========================================
-        // 1. BERÄKNA ÅRSINKOMST (SKV 433 section 7.1)
-        // ========================================
-        BigDecimal grossYearly = request.grossMonthlySalary()
-                .multiply(BigDecimal.valueOf(MONTHS_PER_YEAR));
-
-        // ========================================
-        // 2. GRUNDAVDRAG (SKV 433 section 6.1)
-        // ========================================
+        BigDecimal grossYearly = request.grossMonthlySalary().multiply(BigDecimal.valueOf(MONTHS_PER_YEAR));
         BigDecimal basicDeduction = basicDeductionCalculator.calculate(grossYearly, request.isPensioner());
-
-        // ========================================
-        // 3. BESKATTNINGSBAR FÖRVÄRVSINKOMST
-        // ========================================
         BigDecimal taxableIncome = grossYearly.subtract(basicDeduction).max(BigDecimal.ZERO);
 
-        // ========================================
-        // 4. KOMMUNAL INKOMSTSKATT (SKV 433 section 7.3)
-        // ========================================
-        BigDecimal totalLocalTaxRate = municipalTaxRate.add(regionalTaxRate);
-        BigDecimal municipalTax = taxableIncome.multiply(municipalTaxRate)
-                .setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal regionalTax = taxableIncome.multiply(regionalTaxRate)
-                .setScale(SCALE, RoundingMode.HALF_UP);
-        BigDecimal totalCommunalTax = municipalTax.add(regionalTax);
-
-        // ========================================
-        // 5. STATLIG INKOMSTSKATT (SKV 433 section 7.2)
-        // 20% på BFI över 643 000 kr
-        // ========================================
-        BigDecimal stateTax = calculateStateTax(taxableIncome);
-
-        // ========================================
-        // 6. ALLMÄN PENSIONSAVGIFT (SKV 433 section 7.4)
-        // 7% av årsinkomst, max 47 100 kr
-        // Ej för pensionärer eller inkomst under 25 042 kr
-        // ========================================
-        BigDecimal pensionContribution = BigDecimal.ZERO;
-        if (!request.isPensioner() && grossYearly.compareTo(PENSION_CONTRIBUTION_MIN_INCOME) >= 0) {
-            BigDecimal pensionBase = grossYearly.min(PENSION_CONTRIBUTION_MAX_INCOME);
-            pensionContribution = pensionBase.multiply(PENSION_CONTRIBUTION_RATE);
-            // Avrunda till närmaste hundratal (50 öre avrundas nedåt)
-            pensionContribution = roundToHundredSpecial(pensionContribution);
-            pensionContribution = pensionContribution.min(PENSION_CONTRIBUTION_MAX);
-        }
-
-        // ========================================
-        // 7. SKATTEREDUKTION FÖR ALLMÄN PENSIONSAVGIFT (SKV 433 section 7.5.1)
-        // 100% av avgiften, men får ej överstiga kommunal + statlig skatt
-        // ========================================
-        BigDecimal pensionReduction = pensionContribution.min(totalCommunalTax.add(stateTax));
-
-        // ========================================
-        // 8. JOBBSKATTEAVDRAG (SKV 433 section 7.5.2)
-        // Endast mot kommunal inkomstskatt
-        // ========================================
-        BigDecimal jobTaxCredit = BigDecimal.ZERO;
-        if (!request.isPensioner() || grossYearly.compareTo(BigDecimal.ZERO) > 0) {
-            // For working income (kolumn 1 or 3)
-            jobTaxCredit = jobTaxCreditCalculator.calculate(
-                    grossYearly, totalLocalTaxRate, request.isPensioner());
-        }
-
-        // ========================================
-        // 9. SKATTEREDUKTION FÖR FÖRVÄRVSINKOMST (SKV 433 section 7.5.4)
-        // 0.75% av (BFI - 40 000), max 1 500 kr
-        // ========================================
-        BigDecimal incomeReduction = calculateIncomeReduction(taxableIncome);
-
-        // ========================================
-        // 10. PUBLIC SERVICE-AVGIFT (SKV 433 section 7.6)
-        // 1% av BFI, max 1 184 kr
-        // ========================================
-        BigDecimal publicServiceFee = calculatePublicServiceFee(taxableIncome);
-
-        // ========================================
-        // 11. BEGRAVNINGSAVGIFT OCH KYRKOAVGIFT (SKV 433 section 7.3)
-        // Beräknas på beskattningsbar förvärvsinkomst
-        // ========================================
-        BigDecimal burialFee = taxableIncome.multiply(burialFeeRate)
-                .setScale(0, RoundingMode.DOWN);
-
-        BigDecimal churchFee = BigDecimal.ZERO;
-        if (request.churchMember()) {
-            churchFee = taxableIncome.multiply(churchFeeRate)
-                    .setScale(0, RoundingMode.DOWN);
-        }
-
-        // ========================================
-        // 12. TOTAL SKATT (SKV 433 section 8)
-        // Formel för kolumn 1:
-        // statlig skatt + kommunal skatt 
-        // - skattereduktion för pensionsavgift 
-        // - jobbskatteavdrag 
-        // - skattereduktion förvärvsinkomst
-        // + begravnings- och kyrkoavgift 
-        // + allmän pensionsavgift 
-        // + public service-avgift
-        // ========================================
-        
-        // Kommunal skatt efter reduktioner
-        // Jobbskatteavdrag och inkomstreduktion räknas bara av mot kommunal skatt
-        BigDecimal communalTaxAfterReductions = totalCommunalTax
-                .subtract(jobTaxCredit)
-                .subtract(incomeReduction)
-                .max(BigDecimal.ZERO);
-        
-        // Statlig skatt efter pensionsavgiftsreduktion
-        // Pensionsavgiftsreduktion dras först mot kommunal, sedan statlig
-        BigDecimal pensionReductionForCommunal = pensionReduction.min(totalCommunalTax);
-        BigDecimal pensionReductionForState = pensionReduction.subtract(pensionReductionForCommunal).max(BigDecimal.ZERO);
-        
-        BigDecimal communalTaxFinal = communalTaxAfterReductions.subtract(pensionReductionForCommunal).max(BigDecimal.ZERO);
-        BigDecimal stateTaxFinal = stateTax.subtract(pensionReductionForState).max(BigDecimal.ZERO);
-
-        // Total årlig skatt
-        BigDecimal yearlyTotalTax = communalTaxFinal
-                .add(stateTaxFinal)
-                .add(burialFee)
-                .add(churchFee)
-                .add(pensionContribution)
-                .add(publicServiceFee);
-
-        // ========================================
-        // 13. MÅNATLIG SKATT OCH NETTOLÖN
-        // ========================================
-        BigDecimal monthlyTotalTax = yearlyTotalTax
-                .divide(BigDecimal.valueOf(MONTHS_PER_YEAR), SCALE, RoundingMode.HALF_UP);
-
+        TaxComponents components = calculateTaxComponents(request, rates, grossYearly, taxableIncome);
+        BigDecimal yearlyTotalTax = calculateYearlyTotalTax(components);
+        BigDecimal monthlyTotalTax = yearlyTotalTax.divide(BigDecimal.valueOf(MONTHS_PER_YEAR), SCALE, RoundingMode.HALF_UP);
         BigDecimal netMonthlySalary = request.grossMonthlySalary().subtract(monthlyTotalTax);
 
-        // Effective tax rate
-        BigDecimal effectiveTaxRate = BigDecimal.ZERO;
-        if (grossYearly.compareTo(BigDecimal.ZERO) > 0) {
-            effectiveTaxRate = yearlyTotalTax.divide(grossYearly, 4, RoundingMode.HALF_UP);
-        }
-
-        // Log the calculation asynchronously (non-blocking)
         taxCalculationLogService.logCalculationAsync(
                 municipality.getId(), request.grossMonthlySalary(), yearlyTotalTax, netMonthlySalary);
 
-        // Benchmark timing (DEBUG level for production)
-        long endTime = System.nanoTime();
-        long durationMs = (endTime - startTime) / 1_000_000;
-        if (log.isDebugEnabled()) {
-            long durationMicros = (endTime - startTime) / 1_000;
-            log.debug("Tax calculation completed in {} ms ({} µs) for municipality {}",
-                    durationMs, durationMicros, municipality.getName());
-        }
-        // Warn if calculation takes too long (>500ms)
-        if (durationMs > 500) {
-            log.warn("Slow tax calculation: {} ms for municipality {}", durationMs, municipality.getName());
-        }
+        logPerformance(startTime, municipality.getName());
 
-        // Build response
-        return TaxCalculationResponse.builder()
-                .municipalityId(municipality.getId())
-                .municipalityName(municipality.getName())
-                .regionName(municipality.getRegion().getName())
-                .grossMonthlySalary(request.grossMonthlySalary())
-                .grossYearlySalary(grossYearly)
-                .municipalTaxRate(municipalTaxRate)
-                .regionalTaxRate(regionalTaxRate)
-                .stateTaxRate(STATE_TAX_RATE)
-                .burialFeeRate(burialFeeRate)
-                .churchFeeRate(churchFeeRate)
-                .yearlyBasicDeduction(basicDeduction)
-                .yearlyJobTaxCredit(jobTaxCredit)
-                .yearlyTaxableIncome(taxableIncome)
-                .yearlyMunicipalTax(municipalTax)
-                .yearlyRegionalTax(regionalTax)
-                .yearlyStateTax(stateTax)
-                .yearlyBurialFee(burialFee)
-                .yearlyChurchFee(churchFee)
-                .yearlyTotalTax(yearlyTotalTax)
-                .monthlyTotalTax(monthlyTotalTax)
-                .netMonthlySalary(netMonthlySalary)
-                .effectiveTaxRate(effectiveTaxRate)
-                .build();
-    }
-
-    /**
-     * Calculate state tax (statlig skatt) - SKV 433 section 7.2.
-     * 20% on beskattningsbar förvärvsinkomst above 643 000 kr.
-     */
-    private BigDecimal calculateStateTax(BigDecimal taxableIncome) {
-        if (taxableIncome.compareTo(STATE_TAX_THRESHOLD) <= 0) {
-            return BigDecimal.ZERO;
-        }
-
-        BigDecimal incomeAboveThreshold = taxableIncome.subtract(STATE_TAX_THRESHOLD);
-        return incomeAboveThreshold.multiply(STATE_TAX_RATE)
-                .setScale(SCALE, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * Calculate income reduction (skattereduktion för förvärvsinkomst) - SKV 433 section 7.5.4.
-     * 0.75% of (BFI - 40 000), max 1 500 kr.
-     */
-    private BigDecimal calculateIncomeReduction(BigDecimal taxableIncome) {
-        if (taxableIncome.compareTo(INCOME_REDUCTION_THRESHOLD) <= 0) {
-            return BigDecimal.ZERO;
-        }
-
-        if (taxableIncome.compareTo(INCOME_REDUCTION_MAX_THRESHOLD) >= 0) {
-            return INCOME_REDUCTION_MAX;
-        }
-
-        BigDecimal base = taxableIncome.subtract(INCOME_REDUCTION_THRESHOLD);
-        return base.multiply(INCOME_REDUCTION_RATE).setScale(0, RoundingMode.DOWN);
-    }
-
-    /**
-     * Calculate public service fee - SKV 433 section 7.6.
-     * 1% of BFI, max 1 184 kr.
-     */
-    private BigDecimal calculatePublicServiceFee(BigDecimal taxableIncome) {
-        if (taxableIncome.compareTo(BigDecimal.ZERO) <= 0) {
-            return BigDecimal.ZERO;
-        }
-
-        if (taxableIncome.compareTo(PUBLIC_SERVICE_THRESHOLD) >= 0) {
-            return PUBLIC_SERVICE_MAX;
-        }
-
-        return taxableIncome.multiply(PUBLIC_SERVICE_RATE).setScale(0, RoundingMode.DOWN);
-    }
-
-    /**
-     * Round to nearest hundred, with special rule: 50 kr rounds down.
-     * From SKV 433 section 7.4: "Avgift som slutar på 50 kr avrundas till närmaste lägre hundratal kronor."
-     */
-    private BigDecimal roundToHundredSpecial(BigDecimal value) {
-        BigDecimal remainder = value.remainder(new BigDecimal("100"));
-        BigDecimal base = value.subtract(remainder);
-        
-        if (remainder.compareTo(new BigDecimal("50")) > 0) {
-            return base.add(new BigDecimal("100"));
-        }
-        return base;
+        return buildResponse(request, municipality, rates, grossYearly, basicDeduction, 
+                taxableIncome, components, yearlyTotalTax, monthlyTotalTax, netMonthlySalary);
     }
 
     /**
@@ -337,12 +110,161 @@ public class TaxCalculationService {
                         "Municipality not found with code: " + municipalityCode));
 
         TaxCalculationRequest request = new TaxCalculationRequest(
-                municipality.getId(),
-                grossMonthlySalary,
-                churchMember,
-                isPensioner
-        );
+                municipality.getId(), grossMonthlySalary, churchMember, isPensioner);
 
         return calculate(request);
+    }
+
+    // ========================================
+    // PRIVATE HELPER METHODS
+    // ========================================
+
+    private Municipality getMunicipalityOrThrow(UUID municipalityId) {
+        return taxRateService.getMunicipality(municipalityId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Municipality not found: " + municipalityId));
+    }
+
+    private TaxRates fetchTaxRates(UUID municipalityId, boolean churchMember) {
+        Map<String, BigDecimal> allRates = taxRateService.getAllTaxRates(municipalityId, LocalDate.now());
+        
+        return new TaxRates(
+                allRates.getOrDefault("COMMUNAL", DEFAULT_MUNICIPAL_TAX_RATE),
+                allRates.getOrDefault("REGIONAL", DEFAULT_REGIONAL_TAX_RATE),
+                allRates.getOrDefault("BURIAL", DEFAULT_BURIAL_FEE_RATE),
+                churchMember ? allRates.getOrDefault("CHURCH", DEFAULT_CHURCH_FEE_RATE) : BigDecimal.ZERO
+        );
+    }
+
+    private TaxComponents calculateTaxComponents(TaxCalculationRequest request, TaxRates rates,
+                                                   BigDecimal grossYearly, BigDecimal taxableIncome) {
+        BigDecimal municipalTax = taxableIncome.multiply(rates.municipal()).setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal regionalTax = taxableIncome.multiply(rates.regional()).setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal stateTax = calculateStateTax(taxableIncome);
+        BigDecimal pensionContribution = calculatePensionContribution(grossYearly, request.isPensioner());
+        BigDecimal jobTaxCredit = jobTaxCreditCalculator.calculate(grossYearly, rates.totalLocal(), request.isPensioner());
+        BigDecimal incomeReduction = calculateIncomeReduction(taxableIncome);
+        BigDecimal publicServiceFee = calculatePublicServiceFee(taxableIncome);
+        BigDecimal burialFee = taxableIncome.multiply(rates.burial()).setScale(0, RoundingMode.DOWN);
+        BigDecimal churchFee = request.churchMember() 
+                ? taxableIncome.multiply(rates.church()).setScale(0, RoundingMode.DOWN) 
+                : BigDecimal.ZERO;
+
+        return new TaxComponents(municipalTax, regionalTax, stateTax, pensionContribution,
+                jobTaxCredit, incomeReduction, publicServiceFee, burialFee, churchFee);
+    }
+
+    private BigDecimal calculateYearlyTotalTax(TaxComponents c) {
+        BigDecimal pensionReduction = c.pensionContribution().min(c.totalCommunalTax().add(c.stateTax()));
+        BigDecimal pensionReductionForCommunal = pensionReduction.min(c.totalCommunalTax());
+        BigDecimal pensionReductionForState = pensionReduction.subtract(pensionReductionForCommunal).max(BigDecimal.ZERO);
+        
+        BigDecimal communalTaxFinal = c.totalCommunalTax()
+                .subtract(c.jobTaxCredit())
+                .subtract(c.incomeReduction())
+                .subtract(pensionReductionForCommunal)
+                .max(BigDecimal.ZERO);
+        
+        BigDecimal stateTaxFinal = c.stateTax().subtract(pensionReductionForState).max(BigDecimal.ZERO);
+
+        return communalTaxFinal
+                .add(stateTaxFinal)
+                .add(c.burialFee())
+                .add(c.churchFee())
+                .add(c.pensionContribution())
+                .add(c.publicServiceFee());
+    }
+
+    private BigDecimal calculatePensionContribution(BigDecimal grossYearly, boolean isPensioner) {
+        if (isPensioner || grossYearly.compareTo(PENSION_CONTRIBUTION_MIN_INCOME) < 0) {
+            return BigDecimal.ZERO;
+        }
+        
+        BigDecimal pensionBase = grossYearly.min(PENSION_CONTRIBUTION_MAX_INCOME);
+        BigDecimal contribution = pensionBase.multiply(PENSION_CONTRIBUTION_RATE);
+        contribution = roundToHundredSpecial(contribution);
+        return contribution.min(PENSION_CONTRIBUTION_MAX);
+    }
+
+    private BigDecimal calculateStateTax(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(STATE_TAX_THRESHOLD) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return taxableIncome.subtract(STATE_TAX_THRESHOLD)
+                .multiply(STATE_TAX_RATE)
+                .setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal calculateIncomeReduction(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(INCOME_REDUCTION_THRESHOLD) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        if (taxableIncome.compareTo(INCOME_REDUCTION_MAX_THRESHOLD) >= 0) {
+            return INCOME_REDUCTION_MAX;
+        }
+        return taxableIncome.subtract(INCOME_REDUCTION_THRESHOLD)
+                .multiply(INCOME_REDUCTION_RATE)
+                .setScale(0, RoundingMode.DOWN);
+    }
+
+    private BigDecimal calculatePublicServiceFee(BigDecimal taxableIncome) {
+        if (taxableIncome.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        if (taxableIncome.compareTo(PUBLIC_SERVICE_THRESHOLD) >= 0) {
+            return PUBLIC_SERVICE_MAX;
+        }
+        return taxableIncome.multiply(PUBLIC_SERVICE_RATE).setScale(0, RoundingMode.DOWN);
+    }
+
+    private BigDecimal roundToHundredSpecial(BigDecimal value) {
+        BigDecimal remainder = value.remainder(new BigDecimal("100"));
+        BigDecimal base = value.subtract(remainder);
+        return remainder.compareTo(new BigDecimal("50")) > 0 ? base.add(new BigDecimal("100")) : base;
+    }
+
+    private void logPerformance(long startTime, String municipalityName) {
+        long durationMs = (System.nanoTime() - startTime) / 1_000_000;
+        if (log.isDebugEnabled()) {
+            log.debug("Tax calculation completed in {} ms for municipality {}", durationMs, municipalityName);
+        }
+        if (durationMs > 500) {
+            log.warn("Slow tax calculation: {} ms for municipality {}", durationMs, municipalityName);
+        }
+    }
+
+    private TaxCalculationResponse buildResponse(TaxCalculationRequest request, Municipality municipality,
+                                                   TaxRates rates, BigDecimal grossYearly, BigDecimal basicDeduction,
+                                                   BigDecimal taxableIncome, TaxComponents c,
+                                                   BigDecimal yearlyTotalTax, BigDecimal monthlyTotalTax, 
+                                                   BigDecimal netMonthlySalary) {
+        BigDecimal effectiveTaxRate = grossYearly.compareTo(BigDecimal.ZERO) > 0
+                ? yearlyTotalTax.divide(grossYearly, 4, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        return TaxCalculationResponse.builder()
+                .municipalityId(municipality.getId())
+                .municipalityName(municipality.getName())
+                .regionName(municipality.getRegion().getName())
+                .grossMonthlySalary(request.grossMonthlySalary())
+                .grossYearlySalary(grossYearly)
+                .municipalTaxRate(rates.municipal())
+                .regionalTaxRate(rates.regional())
+                .stateTaxRate(STATE_TAX_RATE)
+                .burialFeeRate(rates.burial())
+                .churchFeeRate(rates.church())
+                .yearlyBasicDeduction(basicDeduction)
+                .yearlyJobTaxCredit(c.jobTaxCredit())
+                .yearlyTaxableIncome(taxableIncome)
+                .yearlyMunicipalTax(c.municipalTax())
+                .yearlyRegionalTax(c.regionalTax())
+                .yearlyStateTax(c.stateTax())
+                .yearlyBurialFee(c.burialFee())
+                .yearlyChurchFee(c.churchFee())
+                .yearlyTotalTax(yearlyTotalTax)
+                .monthlyTotalTax(monthlyTotalTax)
+                .netMonthlySalary(netMonthlySalary)
+                .effectiveTaxRate(effectiveTaxRate)
+                .build();
     }
 }
