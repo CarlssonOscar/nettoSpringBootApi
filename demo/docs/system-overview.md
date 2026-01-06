@@ -1,8 +1,8 @@
 # NettoApi - System Overview
 
 > **Backend API** - Swedish Salary & Tax Calculator  
-> **Last Updated**: 2026-01-06  
-> **Version**: 1.2
+> **Last Updated**: 2026-01-07  
+> **Version**: 1.3
 
 ---
 
@@ -501,43 +501,61 @@ erDiagram
 - More classes to navigate
 - Coordination logic in TaxCalculationService
 
-### Decision 6: Tax Data from Skatteverket Excel Import
+### Decision 6: Formula-Based Deductions Instead of Official Tax Tables
 
-**Decision**: Import tax rates from Skatteverket's official Excel files (`skattesatser-kommuner-YYYY.xlsx`) via admin endpoint, and calculate grundavdrag and jobbskatteavdrag using Skatteverket's published formulas.
+**Decision**: Calculate grundavdrag and jobbskatteavdrag using Skatteverket's published formulas (SKV 433) instead of importing the official tax tables (skattetabeller 29-40).
 
-**Data Source**: 
-- **Tax rates**: Imported from Skatteverket Excel file via `POST /api/v1/admin/import/tax-rates`
-- **File location**: Download from [Skatteverket Skattetabeller](https://skatteverket.se/foretag/arbetsgivare/arbetsgivaravgifterochskatteavdrag/skattetabeller.html)
+> ⚠️ **This is a known limitation** - see [Known Limitations](#9-known-limitations--technical-debt) for details.
 
-**Imported data per municipality**:
-| Column | Tax Type | Example |
-|--------|----------|---------|
-| Kommunalskatt | COMMUNAL | 20.35% |
-| Landstingsskatt | REGIONAL | 11.68% |
-| Begravningsavgift | BURIAL | 0.28% |
-| Kyrkoavgift | CHURCH | 1.03% |
+**The Problem**:
+Skatteverket publishes official tax tables (tabell 29-40) that employers use to determine exact tax deductions. These tables contain pre-calculated values for every income level. However:
 
-**Calculated deductions (formula-based)**:
-| Deduction | Calculator | Source |
-|-----------|------------|--------|
-| Grundavdrag | `BasicDeductionCalculator` | Skatteverket formula using prisbasbelopp (PBB) |
-| Jobbskatteavdrag | `JobTaxCreditCalculator` | Skatteverket formula using income + local tax rate |
+| Format | Availability | Practical for Import? |
+|--------|-------------|----------------------|
+| PDF files | ✅ Available | ❌ No - unreliable parsing, 1800+ rows per table |
+| Excel/CSV | ❌ Not available | - |
+| API | ❌ Not available | - |
+
+**What We Do Instead**:
+
+| Data Type | Source | Method |
+|-----------|--------|--------|
+| **Tax rates** (kommunal, regional, burial, church) | Skatteverket Excel file | ✅ Imported via admin endpoint |
+| **Grundavdrag** (basic deduction) | SKV 433 formula | ⚠️ Calculated, not from table |
+| **Jobbskatteavdrag** (job tax credit) | SKV 433 formula | ⚠️ Calculated, not from table |
+
+**Why Formulas Work (Mostly)**:
+- Skatteverket's tax tables are *generated* from these same formulas
+- The formulas are publicly documented in SKV 433 (Teknisk beskrivning för skattetabeller)
+- Formula approach is transparent, testable, and matches official calculation method
 
 **Alternatives Considered**:
-- Import PDF tax tables (tabell 29-40) manually (rejected: error-prone, 1800+ rows per table)
-- Parse PDF programmatically (rejected: unreliable for tabular data)
-- No deductions (rejected: inaccurate results)
+- ❌ Import PDF tax tables manually (rejected: error-prone, 1800+ rows per table × 12 tables)
+- ❌ Parse PDF programmatically (rejected: unreliable for tabular data, breaks on format changes)
+- ❌ OCR extraction (rejected: accuracy issues, maintenance burden)
+- ❌ No deductions at all (rejected: results would be wildly inaccurate)
 
-**Rationale**:
-- Skatteverket's tax tables (skattetabeller) are *generated* from these same formulas
-- Excel import automates municipality/region data with minimal manual effort
-- Formula approach is transparent, testable, and matches official calculation method
-- Yearly updates require only: new Excel file + updated constants (PBB, thresholds)
+**Trade-offs & Known Weaknesses**:
 
-**Trade-offs**:
-- Minor rounding differences possible vs. official tables (±1 kr)
-- Must update `TaxConstants` annually with new PBB and thresholds
-- Church fee defaults to value from Excel (typically ~1%)
+| Trade-off | Impact | Mitigation |
+|-----------|--------|------------|
+| **Rounding differences** | Results may differ ±1-5 kr from official tables | Acceptable for informational use; employers use official tables |
+| **Not identical to employer deduction** | User's actual payslip may differ slightly | Clearly communicate this is an *estimate* |
+| **Hardcoded constants** | `TaxConstants.java` must be updated annually | Document update process; values from SKV 433 |
+| **No table number selection** | Cannot specify "tabell 31" like on a real tax card | Would require full table import |
+
+**Yearly Update Process**:
+1. Download new SKV 433 document from Skatteverket
+2. Update constants in `TaxConstants.java`:
+   - `PRICE_BASE_AMOUNT` (prisbasbelopp)
+   - `INCOME_BASE_AMOUNT` (inkomstbasbelopp)  
+   - `STATE_TAX_THRESHOLD` (skiktgräns)
+   - All threshold values (GA_THRESHOLD_*, JSA_THRESHOLD_*, etc.)
+3. Import new tax rates from Excel file via admin endpoint
+
+**Data Sources**:
+- **Tax rates Excel**: [Skatteverket Skattetabeller](https://skatteverket.se/foretag/arbetsgivare/arbetsgivaravgifterochskatteavdrag/skattetabeller.html)
+- **Formulas**: SKV 433 - Teknisk beskrivning för skattetabeller (PDF, updated yearly)
 
 ---
 
@@ -583,13 +601,33 @@ Potential future integration to fetch official tax rates automatically.
 
 ## 9. Known Limitations & Technical Debt
 
-### Current Limitations
+### ⚠️ Primary Limitation: Formula-Based Deductions
+
+**This is the most significant architectural limitation of the system.**
+
+The system calculates grundavdrag (basic deduction) and jobbskatteavdrag (job tax credit) using **formulas** instead of Skatteverket's official tax tables. This was a deliberate choice due to data availability constraints.
+
+| What We Wanted | What's Available | What We Do |
+|----------------|------------------|------------|
+| Import official skattetabeller (tabell 29-40) | Only PDF format, no Excel/CSV/API | Calculate using SKV 433 formulas |
+
+**Why This Matters**:
+- **Employers use the official tables** - A user's actual tax deduction is looked up from tabell 29-40, not calculated
+- **Rounding differences occur** - Our calculation may differ ±1-5 kr from the table value
+- **Not suitable for payroll systems** - This API provides *estimates*, not exact figures
+
+**Root Cause**: 
+Skatteverket publishes tax tables only as PDF files. These contain ~1,800 rows per table across 12 tables (tabell 29-40). Parsing PDFs is unreliable and error-prone.
+
+**See**: [Decision 6](#decision-6-formula-based-deductions-instead-of-official-tax-tables) for full context.
+
+### Other Current Limitations
 
 | Limitation | Impact | Mitigation |
 |------------|--------|------------|
+| **Hardcoded tax constants** | Must update `TaxConstants.java` yearly | Documented update process |
 | **No authentication** | API is publicly accessible | Rely on API Gateway for auth |
 | **No rate limiting** | Vulnerable to abuse | Implement in API Gateway |
-| **Rounding vs. tax tables** | Results may differ ±1 kr from official tables | Acceptable for informational use |
 | **Swedish only** | No i18n support | Not a priority for MVP |
 
 ### Technical Debt
@@ -598,6 +636,7 @@ Potential future integration to fetch official tax rates automatically.
 2. **Validation**: More comprehensive input validation
 3. **Documentation**: Swagger annotations could be more detailed
 4. **Monitoring**: Add metrics and tracing
+5. **Externalize constants**: Move `TaxConstants` to configuration or database
 
 ### Planned Improvements
 
@@ -608,6 +647,8 @@ Potential future integration to fetch official tax rates automatically.
 - [ ] Add input validation with detailed error messages
 - [ ] Create integration tests
 - [ ] Add request logging/tracing
+- [ ] Move tax constants to database for easier yearly updates
+- [ ] Investigate if Skatteverket provides machine-readable tax tables
 
 ---
 
@@ -650,7 +691,10 @@ Potential future integration to fetch official tax rates automatically.
 | Date | Version | Changes |
 |------|---------|---------|
 | 2025-12-29 | 1.0 | Initial documentation |
-| 2026-01-05 | 1.1 | Added Excel import for tax rates from Skatteverket, documented formula-based deductions || 2026-01-06 | 1.2 | Added Caffeine caching, async logging, optimized DB indexes, refactored TaxCalculationService |
+| 2026-01-05 | 1.1 | Added Excel import for tax rates from Skatteverket, documented formula-based deductions |
+| 2026-01-06 | 1.2 | Added Caffeine caching, async logging, optimized DB indexes, refactored TaxCalculationService |
+| 2026-01-07 | 1.3 | **Enhanced documentation of formula-based deductions as primary limitation** - clarified why we calculate instead of using official tax tables, added detailed trade-offs and yearly update process |
+
 ---
 
 *This documentation focuses on architectural decisions and system design. For implementation details, refer to the source code.*
