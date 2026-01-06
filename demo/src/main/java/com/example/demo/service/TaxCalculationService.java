@@ -3,8 +3,6 @@ package com.example.demo.service;
 import com.example.demo.dto.TaxCalculationRequest;
 import com.example.demo.dto.TaxCalculationResponse;
 import com.example.demo.entity.Municipality;
-import com.example.demo.entity.TaxCalculationLog;
-import com.example.demo.repository.TaxCalculationLogRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -43,24 +41,26 @@ public class TaxCalculationService {
     private final TaxRateService taxRateService;
     private final BasicDeductionCalculator basicDeductionCalculator;
     private final JobTaxCreditCalculator jobTaxCreditCalculator;
-    private final TaxCalculationLogRepository taxCalculationLogRepository;
+    private final TaxCalculationLogService taxCalculationLogService;
 
     public TaxCalculationService(TaxRateService taxRateService,
                                   BasicDeductionCalculator basicDeductionCalculator,
                                   JobTaxCreditCalculator jobTaxCreditCalculator,
-                                  TaxCalculationLogRepository taxCalculationLogRepository) {
+                                  TaxCalculationLogService taxCalculationLogService) {
         this.taxRateService = taxRateService;
         this.basicDeductionCalculator = basicDeductionCalculator;
         this.jobTaxCreditCalculator = jobTaxCreditCalculator;
-        this.taxCalculationLogRepository = taxCalculationLogRepository;
+        this.taxCalculationLogService = taxCalculationLogService;
     }
 
     /**
      * Calculate net salary from gross salary with full tax breakdown.
      * Following SKV 433 exactly.
+     * Using readOnly=true for better performance since this only reads data.
      */
-    @Transactional
+    @Transactional(readOnly = true)
     public TaxCalculationResponse calculate(TaxCalculationRequest request) {
+        long startTime = System.nanoTime();
         log.info("Calculating tax for municipality {} with gross salary {}",
                 request.municipalityId(), request.grossMonthlySalary());
 
@@ -71,14 +71,16 @@ public class TaxCalculationService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Municipality not found: " + request.municipalityId()));
 
-        // Get tax rates from database
-        BigDecimal municipalTaxRate = taxRateService.getMunicipalTaxRate(request.municipalityId(), today);
-        BigDecimal regionalTaxRate = taxRateService.getRegionalTaxRate(request.municipalityId(), today);
-        BigDecimal burialFeeRate = taxRateService.getBurialFeeRate(request.municipalityId(), today);
+        // OPTIMIZATION: Get ALL tax rates in ONE query instead of 4 separate queries
+        java.util.Map<String, BigDecimal> allRates = taxRateService.getAllTaxRates(request.municipalityId(), today);
+        
+        BigDecimal municipalTaxRate = allRates.getOrDefault("COMMUNAL", TaxConstants.DEFAULT_MUNICIPAL_TAX_RATE);
+        BigDecimal regionalTaxRate = allRates.getOrDefault("REGIONAL", TaxConstants.DEFAULT_REGIONAL_TAX_RATE);
+        BigDecimal burialFeeRate = allRates.getOrDefault("BURIAL", TaxConstants.DEFAULT_BURIAL_FEE_RATE);
 
         BigDecimal churchFeeRate = BigDecimal.ZERO;
         if (request.churchMember()) {
-            churchFeeRate = taxRateService.getChurchFeeRate(request.municipalityId(), today);
+            churchFeeRate = allRates.getOrDefault("CHURCH", TaxConstants.DEFAULT_CHURCH_FEE_RATE);
         }
 
         // ========================================
@@ -218,8 +220,22 @@ public class TaxCalculationService {
             effectiveTaxRate = yearlyTotalTax.divide(grossYearly, 4, RoundingMode.HALF_UP);
         }
 
-        // Log the calculation
-        logCalculation(municipality, request.grossMonthlySalary(), yearlyTotalTax, netMonthlySalary);
+        // Log the calculation asynchronously (non-blocking)
+        taxCalculationLogService.logCalculationAsync(
+                municipality.getId(), request.grossMonthlySalary(), yearlyTotalTax, netMonthlySalary);
+
+        // Benchmark timing (DEBUG level for production)
+        long endTime = System.nanoTime();
+        long durationMs = (endTime - startTime) / 1_000_000;
+        if (log.isDebugEnabled()) {
+            long durationMicros = (endTime - startTime) / 1_000;
+            log.debug("Tax calculation completed in {} ms ({} µs) for municipality {}",
+                    durationMs, durationMicros, municipality.getName());
+        }
+        // Warn if calculation takes too long (>500ms)
+        if (durationMs > 500) {
+            log.warn("Slow tax calculation: {} ms for municipality {}", durationMs, municipality.getName());
+        }
 
         // Build response
         return TaxCalculationResponse.builder()
@@ -307,26 +323,6 @@ public class TaxCalculationService {
             return base.add(new BigDecimal("100"));
         }
         return base;
-    }
-
-    /**
-     * Log the tax calculation for analytics and auditing.
-     */
-    private void logCalculation(Municipality municipality, BigDecimal grossSalary,
-                                 BigDecimal totalTax, BigDecimal netSalary) {
-        try {
-            TaxCalculationLog logEntry = new TaxCalculationLog(
-                    municipality,
-                    grossSalary,
-                    totalTax.divide(BigDecimal.valueOf(MONTHS_PER_YEAR), SCALE, RoundingMode.HALF_UP),
-                    netSalary
-            );
-            taxCalculationLogRepository.save(logEntry);
-            log.debug("Logged tax calculation for municipality {}", municipality.getName());
-        } catch (Exception e) {
-            // Don't fail the calculation if logging fails
-            log.error("Failed to log tax calculation", e);
-        }
     }
 
     /**

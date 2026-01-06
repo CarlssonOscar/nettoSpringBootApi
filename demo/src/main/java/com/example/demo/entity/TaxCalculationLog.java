@@ -14,8 +14,11 @@ public class TaxCalculationLog {
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "municipality_id")
+    @JoinColumn(name = "municipality_id", insertable = false, updatable = false)
     private Municipality municipality;
+
+    @Column(name = "municipality_id")
+    private UUID municipalityId;
 
     @Column(name = "gross_salary", nullable = false, precision = 12, scale = 2)
     private BigDecimal grossSalary;
@@ -54,6 +57,17 @@ public class TaxCalculationLog {
 
     public void setMunicipality(Municipality municipality) {
         this.municipality = municipality;
+        if (municipality != null) {
+            this.municipalityId = municipality.getId();
+        }
+    }
+
+    public UUID getMunicipalityId() {
+        return municipalityId;
+    }
+
+    public void setMunicipalityId(UUID municipalityId) {
+        this.municipalityId = municipalityId;
     }
 
     public BigDecimal getGrossSalary() {

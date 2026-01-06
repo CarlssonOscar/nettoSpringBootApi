@@ -8,12 +8,16 @@ import com.example.demo.repository.MunicipalityRepository;
 import com.example.demo.repository.TaxRateRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.example.demo.service.TaxConstants.*;
 
@@ -38,13 +42,32 @@ public class TaxRateService {
     }
 
     /**
+     * Get all tax rates for a municipality in a single query.
+     * Returns a map of tax type code to rate.
+     * This is the optimized method - ONE query instead of 4.
+     * Results are cached for 1 hour since tax rates rarely change.
+     */
+    @Cacheable(value = "taxRates", key = "#municipalityId.toString() + '_' + #date.toString()")
+    public Map<String, BigDecimal> getAllTaxRates(UUID municipalityId, LocalDate date) {
+        log.debug("Cache miss - fetching tax rates from database for municipality {}", municipalityId);
+        List<TaxRate> rates = taxRateRepository.findValidRatesForMunicipality(municipalityId, date);
+        
+        return rates.stream()
+                .collect(Collectors.toMap(
+                        tr -> tr.getTaxType().getCode(),
+                        TaxRate::getRate,
+                        (existing, replacement) -> existing // Keep first if duplicates
+                ));
+    }
+
+    /**
      * Get municipal tax rate for a municipality.
      */
     public BigDecimal getMunicipalTaxRate(UUID municipalityId, LocalDate date) {
         return taxRateRepository.findByMunicipalityAndTaxType(municipalityId, "COMMUNAL", date)
                 .map(TaxRate::getRate)
                 .orElseGet(() -> {
-                    log.warn("No municipal tax rate found for municipality {}, using default", municipalityId);
+                    log.info("No municipal tax rate found for municipality {}, using default", municipalityId);
                     return DEFAULT_MUNICIPAL_TAX_RATE;
                 });
     }
@@ -57,7 +80,7 @@ public class TaxRateService {
         return taxRateRepository.findByMunicipalityAndTaxType(municipalityId, "REGIONAL", date)
                 .map(TaxRate::getRate)
                 .orElseGet(() -> {
-                    log.warn("No regional tax rate found for municipality {}, using default", municipalityId);
+                    log.info("No regional tax rate found for municipality {}, using default", municipalityId);
                     return DEFAULT_REGIONAL_TAX_RATE;
                 });
     }
@@ -98,15 +121,21 @@ public class TaxRateService {
 
     /**
      * Get municipality with region info.
+     * Cached since municipality data rarely changes.
      */
+    @Cacheable(value = "municipalities", key = "#municipalityId.toString()")
     public Optional<Municipality> getMunicipality(UUID municipalityId) {
+        log.debug("Cache miss - fetching municipality from database: {}", municipalityId);
         return municipalityRepository.findById(municipalityId);
     }
 
     /**
      * Get municipality by code (e.g., "0180" for Stockholm).
+     * Cached since municipality data rarely changes.
      */
+    @Cacheable(value = "municipalities", key = "'code_' + #code")
     public Optional<Municipality> getMunicipalityByCode(String code) {
+        log.debug("Cache miss - fetching municipality by code from database: {}", code);
         return municipalityRepository.findByCode(code);
     }
 }

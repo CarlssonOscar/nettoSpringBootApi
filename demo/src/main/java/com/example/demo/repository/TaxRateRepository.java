@@ -16,12 +16,16 @@ public interface TaxRateRepository extends JpaRepository<TaxRate, UUID> {
 
     /**
      * Find all tax rates for a municipality valid on a specific date.
+     * Uses JOIN FETCH to load taxType in a single query (optimization).
+     * Results should be cached at service layer with @Cacheable.
      */
     @Query("""
         SELECT tr FROM TaxRate tr
+        JOIN FETCH tr.taxType tt
         WHERE tr.municipality.id = :municipalityId
           AND tr.validFrom <= :date
           AND (tr.validTo IS NULL OR tr.validTo >= :date)
+        ORDER BY tt.code
         """)
     List<TaxRate> findValidRatesForMunicipality(
             @Param("municipalityId") UUID municipalityId,
@@ -32,9 +36,11 @@ public interface TaxRateRepository extends JpaRepository<TaxRate, UUID> {
      */
     @Query("""
         SELECT tr FROM TaxRate tr
+        JOIN FETCH tr.taxType tt
         WHERE tr.region.id = :regionId
           AND tr.validFrom <= :date
           AND (tr.validTo IS NULL OR tr.validTo >= :date)
+        ORDER BY tt.code
         """)
     List<TaxRate> findValidRatesForRegion(
             @Param("regionId") UUID regionId,
@@ -42,11 +48,13 @@ public interface TaxRateRepository extends JpaRepository<TaxRate, UUID> {
 
     /**
      * Find a specific tax rate by municipality, tax type and date.
+     * Optimized with JOIN FETCH for taxType.
      */
     @Query("""
         SELECT tr FROM TaxRate tr
+        JOIN FETCH tr.taxType tt
         WHERE tr.municipality.id = :municipalityId
-          AND tr.taxType.code = :taxTypeCode
+          AND tt.code = :taxTypeCode
           AND tr.validFrom <= :date
           AND (tr.validTo IS NULL OR tr.validTo >= :date)
         """)
@@ -57,11 +65,13 @@ public interface TaxRateRepository extends JpaRepository<TaxRate, UUID> {
 
     /**
      * Find a specific tax rate by region, tax type and date.
+     * Optimized with JOIN FETCH for taxType.
      */
     @Query("""
         SELECT tr FROM TaxRate tr
+        JOIN FETCH tr.taxType tt
         WHERE tr.region.id = :regionId
-          AND tr.taxType.code = :taxTypeCode
+          AND tt.code = :taxTypeCode
           AND tr.validFrom <= :date
           AND (tr.validTo IS NULL OR tr.validTo >= :date)
         """)
